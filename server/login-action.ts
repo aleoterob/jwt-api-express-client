@@ -21,9 +21,9 @@ export async function login(email: string, password: string) {
     );
   }
 
-  const setCookieHeader = response.headers.get('set-cookie');
-  if (setCookieHeader) {
-    await extractAndSetCookies(setCookieHeader);
+  const setCookieHeaders = response.headers.getSetCookie();
+  if (setCookieHeaders && setCookieHeaders.length > 0) {
+    await extractAndSetCookies(setCookieHeaders);
   }
 
   return response.json();

@@ -10,11 +10,13 @@ Este cliente Next.js implementa un sistema **transparente** de refresh tokens qu
 
 #### Funciones principales:
 
-- `extractAndSetCookies()` - Extrae y guarda ambos tokens del backend
+- `extractAndSetCookies(setCookieHeaders: string[])` - Extrae y guarda ambos tokens del backend
 - `getAuthToken()` - Obtiene el access token de las cookies
 - `getRefreshToken()` - Obtiene el refresh token de las cookies
 - `clearAuthCookies()` - Limpia ambos tokens al cerrar sesión
 - **`fetchWithAuth()`** - 🌟 **Función mágica** que maneja refresh automático
+
+**IMPORTANTE:** `extractAndSetCookies()` ahora recibe un **array** de headers, no un string individual.
 
 ### 2. **Función `fetchWithAuth()` - El Corazón del Sistema**
 
@@ -47,12 +49,14 @@ fetchWithAuth(url, options);
 #### `login-action.ts`
 
 ```typescript
-await extractAndSetCookies(setCookieHeader);
+const setCookieHeaders = response.headers.getSetCookie(); // Array!
+await extractAndSetCookies(setCookieHeaders);
 ```
 
 - Guarda **ambos** tokens (access + refresh)
-- maxAge de access_token: 10 minutos
+- maxAge de access_token: 15 minutos
 - maxAge de refresh_token: 7 días
+- **Usa `getSetCookie()`** para obtener TODOS los headers (el backend envía 2)
 
 #### `get-users-stats-action.ts`
 
@@ -109,6 +113,8 @@ export async function myProtectedAction() {
 }
 ```
 
+**Nota:** Si el access token expiró (después de 15 minutos de inactividad), `fetchWithAuth()` lo renueva automáticamente usando el refresh token (válido por 7 días).
+
 **⚠️ IMPORTANTE**: NO uses `requireAuth()` cuando uses `fetchWithAuth()`.
 
 - `requireAuth()` verifica el access token (que puede haber expirado)
@@ -142,7 +148,9 @@ Server Action: login()
   ↓
 Backend: POST /api/auth/login
   ↓
-Backend envía Set-Cookie: access_token, refresh_token
+Backend envía DOS Set-Cookie headers: access_token (15min), refresh_token (7días)
+  ↓
+getSetCookie() extrae AMBOS headers
   ↓
 extractAndSetCookies() guarda ambos
   ↓
@@ -265,7 +273,7 @@ const response = await fetchWithAuth(url, {
 ### 2. Probar Refresh Automático
 
 - Login
-- Espera 3 minutos (token expira a los 2 min)
+- Espera 20 minutos (access token expira a los 15 min)
 - Click en "Show users stats"
 - Debería funcionar sin problemas (refresh automático)
 
@@ -281,9 +289,14 @@ const response = await fetchWithAuth(url, {
 Asegúrate de tener en `.env.local`:
 
 ```env
-NEXT_PUBLIC_API_URL=http://localhost:4000
+NEXT_PUBLIC_API_URL=http://localhost:3001
 NODE_ENV=development
 ```
+
+**⚠️ IMPORTANTE**: NO uses comillas alrededor de la URL. Next.js las incluirá en el valor.
+
+❌ **Incorrecto:** `NEXT_PUBLIC_API_URL='http://localhost:3001'`  
+✅ **Correcto:** `NEXT_PUBLIC_API_URL=http://localhost:3001`
 
 ## Próximos Pasos Opcionales
 
@@ -319,3 +332,42 @@ Problema: Refresh innecesarios, desperdicia recursos
 - Refresh solo cuando es necesario (401)
 - Centralizado y reutilizable
 - Transparente para el desarrollador
+- Sesiones de hasta 7 días sin reautenticación
+
+## Problemas Comunes y Soluciones
+
+### ❌ "No refresh token available"
+
+**Causa:** El frontend no está guardando el refresh token del backend.
+
+**Solución:**
+1. Verifica que uses `getSetCookie()` (NO `get('set-cookie')`)
+2. El backend envía DOS headers separados - necesitas capturar ambos
+3. Revisa los logs para confirmar que ambos tokens se guardan
+
+### ❌ ".env.local con comillas"
+
+**Causa:** `NEXT_PUBLIC_API_URL='http://localhost:3001'` incluye las comillas en la URL.
+
+**Solución:**
+```env
+# Incorrecto
+NEXT_PUBLIC_API_URL='http://localhost:3001'
+
+# Correcto
+NEXT_PUBLIC_API_URL=http://localhost:3001
+```
+
+### ❌ "Session expired" inmediatamente
+
+**Causa:** Refresh token expira muy rápido (configurado en minutos en lugar de días).
+
+**Solución:**
+Verifica `REFRESH_TOKEN_EXPIRATION_MINUTES` en el backend:
+```typescript
+// Backend: src/config/constants.ts
+export const REFRESH_TOKEN_EXPIRATION_MINUTES = 10080; // 7 días
+
+// Frontend: lib/auth.ts
+maxAge: 10080 * 60, // 7 días en segundos
+```

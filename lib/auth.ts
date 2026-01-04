@@ -5,41 +5,39 @@ import { cookies } from 'next/headers';
 // no en el navegador. Cuando el backend Express responde con Set-Cookie, Next.js no
 // guarda automáticamente esas cookies, por lo que debemos capturarlas manualmente y
 // almacenarlas en el contexto de Next.js para que estén disponibles en futuras Server Actions
-// El access_token tiene una expiración corta (2 minutos) y el refresh_token dura 7 días
-export async function extractAndSetCookies(setCookieHeader: string) {
-  // Obtiene el store de cookies de Next.js para poder manipularlas
+// El access_token tiene una expiración corta (15 minutos) y el refresh_token dura 7 días
+// IMPORTANTE: El backend envía DOS headers Set-Cookie separados (uno por token)
+export async function extractAndSetCookies(setCookieHeaders: string[]) {
   const cookieStore = await cookies();
 
-  // Extrae el access token del header Set-Cookie usando regex
-  const accessTokenMatch = setCookieHeader.match(/access_token=([^;]+)/);
-  if (accessTokenMatch) {
-    // Guarda el access token con configuración segura y expiración de 2 minutos
-    cookieStore.set('access_token', accessTokenMatch[1], {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 2 * 60,
-    });
-  }
+  for (const setCookieHeader of setCookieHeaders) {
+    const accessTokenMatch = setCookieHeader.match(/access_token=([^;]+)/);
+    if (accessTokenMatch) {
+      cookieStore.set('access_token', accessTokenMatch[1], {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 15 * 60,
+      });
+    }
 
-  // Extrae el refresh token del header Set-Cookie usando regex
-  const refreshTokenMatch = setCookieHeader.match(/refresh_token=([^;]+)/);
-  if (refreshTokenMatch) {
-    // Guarda el refresh token con configuración segura y expiración de 7 días
-    cookieStore.set('refresh_token', refreshTokenMatch[1], {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 7 * 24 * 60 * 60,
-    });
+    const refreshTokenMatch = setCookieHeader.match(/refresh_token=([^;]+)/);
+    if (refreshTokenMatch) {
+      cookieStore.set('refresh_token', refreshTokenMatch[1], {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 10080 * 60,
+      });
+    }
   }
 }
 
 // Obtiene el access token (JWT) de las cookies almacenadas en el contexto de Next.js
 // Retorna undefined si no existe el token
-// Este token tiene una duración corta (2 minutos) para mayor seguridad
+// Este token tiene una duración corta (15 minutos) para mayor seguridad
 export async function getAuthToken(): Promise<string | undefined> {
   // Obtiene el store de cookies de Next.js
   const cookieStore = await cookies();
@@ -51,9 +49,7 @@ export async function getAuthToken(): Promise<string | undefined> {
 // Retorna undefined si no existe el token
 // Este token tiene una duración larga (7 días) y se usa para renovar el access token cuando expira
 export async function getRefreshToken(): Promise<string | undefined> {
-  // Obtiene el store de cookies de Next.js
   const cookieStore = await cookies();
-  // Retorna el valor del refresh token (undefined si no existe)
   return cookieStore.get('refresh_token')?.value;
 }
 
@@ -177,10 +173,10 @@ export async function fetchWithAuth(
       }
 
       // Extrae los nuevos tokens del header Set-Cookie de la respuesta
-      const setCookieHeader = refreshResponse.headers.get('set-cookie');
-      if (setCookieHeader) {
+      const setCookieHeaders = refreshResponse.headers.getSetCookie();
+      if (setCookieHeaders && setCookieHeaders.length > 0) {
         // Guarda los nuevos tokens en las cookies de Next.js
-        await extractAndSetCookies(setCookieHeader);
+        await extractAndSetCookies(setCookieHeaders);
       }
 
       // Obtiene los headers actualizados con los nuevos tokens

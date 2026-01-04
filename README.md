@@ -47,9 +47,9 @@ This application implements a **transparent refresh token system** that automati
 
 **Key Features:**
 
-- **Automatic Token Refresh**: When access token expires (2 min), it's automatically renewed
+- **Automatic Token Refresh**: When access token expires (15 min), it's automatically renewed
 - **Zero User Disruption**: No login prompts, no loading states, completely transparent
-- **Token Rotation**: Security feature that rotates refresh tokens on every use
+- **Token Rotation**: Security feature that rotates refresh tokens on every use (7-day lifetime)
 - **Secure Storage**: Both tokens stored as httpOnly cookies
 
 ### The Server Actions Cookie Problem
@@ -74,23 +74,24 @@ We created custom utilities in `lib/auth.ts` to manually handle cookie propagati
 
 ### Cookie Management Utilities (`lib/auth.ts`)
 
-#### 1. `extractAndSetCookies(setCookieHeader: string)`
+#### 1. `extractAndSetCookies(setCookieHeaders: string[])`
 
-Extracts **BOTH tokens** (access + refresh) from the Express backend's `Set-Cookie` header and stores them in Next.js cookies.
+Extracts **BOTH tokens** (access + refresh) from the Express backend's `Set-Cookie` headers (array) and stores them in Next.js cookies.
 
 ```typescript
-// Used after login to capture both tokens from the backend
-const setCookieHeader = response.headers.get('set-cookie');
-if (setCookieHeader) {
-  await extractAndSetCookies(setCookieHeader);
+// CRITICAL: Use getSetCookie() to get ALL headers (backend sends 2 separate headers)
+const setCookieHeaders = response.headers.getSetCookie();
+if (setCookieHeaders && setCookieHeaders.length > 0) {
+  await extractAndSetCookies(setCookieHeaders);
 }
 ```
 
 **Why it's needed:**
 
 - Server Actions don't automatically store cookies from backend responses
-- We must manually extract and save both access and refresh tokens
-- Access token expires in 2 minutes, refresh token in 7 days
+- Backend sends **TWO separate Set-Cookie headers** (one per token)
+- Must use `getSetCookie()` not `get('set-cookie')` to capture BOTH
+- Access token expires in 15 minutes, refresh token in 7 days
 
 #### 2. `getAuthToken()` & `getRefreshToken()`
 
@@ -147,10 +148,10 @@ const response = await fetchWithAuth(url, options);
 **Example:**
 
 ```typescript
-// User clicks "Show Stats" after 3 minutes (access token expired)
+// User clicks "Show Stats" after 20 minutes (access token expired)
 export async function getUsersStats() {
-  await requireAuth();
-
+  // NOTE: Do NOT use requireAuth() here - fetchWithAuth handles everything
+  
   // fetchWithAuth handles everything automatically
   const response = await fetchWithAuth(
     `${process.env.NEXT_PUBLIC_API_URL}/api/user/stats`,
@@ -191,11 +192,11 @@ const response = await fetch(`${API_URL}/api/auth/login`, {
   body: JSON.stringify({ email, password }),
 });
 
-// 3. Extract and store the cookie from backend response
-const setCookieHeader = response.headers.get('set-cookie');
-await extractAndSetCookie(setCookieHeader);
+// 3. Extract and store BOTH cookies from backend response
+const setCookieHeaders = response.headers.getSetCookie(); // Returns array
+await extractAndSetCookies(setCookieHeaders);
 
-// 4. Cookie is now available in Next.js context
+// 4. Both cookies are now available in Next.js context
 ```
 
 #### 2. Protected Request Flow
@@ -288,8 +289,13 @@ Server Actions provide several advantages over traditional API Routes:
 Create a `.env.local` file in the root directory:
 
 ```env
-NEXT_PUBLIC_API_URL=http://localhost:4000
+NEXT_PUBLIC_API_URL=http://localhost:3001
 ```
+
+**Important:** Do NOT use quotes around the URL. Next.js will include them in the variable value.
+
+❌ **Wrong:** `NEXT_PUBLIC_API_URL='http://localhost:3001'`  
+✅ **Correct:** `NEXT_PUBLIC_API_URL=http://localhost:3001`
 
 **Note:** The backend must be running on the specified URL. See [JWT API Express](../jwt-api-express) for backend setup.
 
