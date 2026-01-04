@@ -39,7 +39,18 @@ A modern Next.js frontend application that consumes the [JWT API Express](../jwt
 └── hooks/                 # Custom React hooks
 ```
 
-## Authentication Implementation
+## Authentication Implementation with Transparent Token Refresh
+
+### Overview
+
+This application implements a **transparent refresh token system** that automatically renews expired access tokens without user intervention. The user never knows when their token expires - they just continue using the application seamlessly.
+
+**Key Features:**
+
+- **Automatic Token Refresh**: When access token expires (2 min), it's automatically renewed
+- **Zero User Disruption**: No login prompts, no loading states, completely transparent
+- **Token Rotation**: Security feature that rotates refresh tokens on every use
+- **Secure Storage**: Both tokens stored as httpOnly cookies
 
 ### The Server Actions Cookie Problem
 
@@ -63,55 +74,108 @@ We created custom utilities in `lib/auth.ts` to manually handle cookie propagati
 
 ### Cookie Management Utilities (`lib/auth.ts`)
 
-#### 1. `extractAndSetCookie(setCookieHeader: string)`
+#### 1. `extractAndSetCookies(setCookieHeader: string)`
 
-Extracts the JWT token from the Express backend's `Set-Cookie` header and stores it in Next.js cookies.
+Extracts **BOTH tokens** (access + refresh) from the Express backend's `Set-Cookie` header and stores them in Next.js cookies.
 
 ```typescript
-// Used after login to capture the token from the backend
+// Used after login to capture both tokens from the backend
 const setCookieHeader = response.headers.get('set-cookie');
 if (setCookieHeader) {
-  await extractAndSetCookie(setCookieHeader);
+  await extractAndSetCookies(setCookieHeader);
 }
 ```
 
 **Why it's needed:**
 
 - Server Actions don't automatically store cookies from backend responses
-- We must manually extract and save them in Next.js cookie context
+- We must manually extract and save both access and refresh tokens
+- Access token expires in 2 minutes, refresh token in 7 days
 
-#### 2. `getAuthToken()`
+#### 2. `getAuthToken()` & `getRefreshToken()`
 
-Retrieves the JWT token from Next.js cookies.
+Retrieve the access token and refresh token from Next.js cookies.
 
 ```typescript
-const token = await getAuthToken();
-// Returns the token string or undefined
+const accessToken = await getAuthToken();
+const refreshToken = await getRefreshToken();
 ```
 
 #### 3. `getAuthHeaders()`
 
-Generates HTTP headers with the authentication cookie for backend requests.
+Generates HTTP headers with **BOTH** authentication cookies for backend requests.
 
 ```typescript
 const headers = await getAuthHeaders();
-// Returns headers including Cookie: access_token=xxx
+// Returns headers including: Cookie: access_token=xxx; refresh_token=yyy
 ```
-
-**Why it's needed:**
-
-- Server Actions must manually include cookies in fetch requests
-- The Next.js server can't automatically forward browser cookies to the backend
 
 #### 4. `requireAuth()`
 
-Validates that an authentication token exists, throwing an error if not.
+Validates that an access token exists, throwing an error if not.
 
 ```typescript
 await requireAuth(); // Throws error if no token
 ```
 
-**Use case:** Protect Server Actions that require authentication.
+#### 5. `clearAuthCookies()`
+
+Removes both tokens from Next.js cookies (used during logout).
+
+```typescript
+await clearAuthCookies();
+```
+
+#### 6. 🌟 `fetchWithAuth()` - **The Magic Function**
+
+**This is the key to transparent token refresh.** It's a wrapper around `fetch` that automatically handles token refresh when the access token expires.
+
+```typescript
+const response = await fetchWithAuth(url, options);
+```
+
+**How it works:**
+
+1. Makes the request with current access token
+2. **If 401 Unauthorized** (token expired):
+   - Automatically calls `/api/auth/refresh` with refresh token
+   - Gets new access + refresh tokens
+   - Updates cookies
+   - **Retries the original request** with new access token
+3. Returns the response (user never knew the token expired!)
+
+**Example:**
+
+```typescript
+// User clicks "Show Stats" after 3 minutes (access token expired)
+export async function getUsersStats() {
+  await requireAuth();
+
+  // fetchWithAuth handles everything automatically
+  const response = await fetchWithAuth(
+    `${process.env.NEXT_PUBLIC_API_URL}/api/user/stats`,
+    { method: 'GET' }
+  );
+
+  // User gets their stats - they never saw an error!
+  return response.json();
+}
+```
+
+**What happens behind the scenes:**
+
+```
+1. User clicks button (access token expired 1 min ago)
+2. fetchWithAuth tries GET /api/user/stats
+3. Backend responds: 401 Unauthorized
+4. fetchWithAuth automatically:
+   a) POST /api/auth/refresh (with refresh token)
+   b) Gets new tokens
+   c) Updates cookies
+   d) RETRIES GET /api/user/stats (with new token)
+5. Backend responds: 200 OK
+6. User sees their stats (never knew token expired!)
+```
 
 ### Authentication Flow
 
@@ -159,22 +223,53 @@ Handles user authentication and cookie setup.
 ```typescript
 export async function login(email: string, password: string) {
   // 1. Call backend login endpoint
-  // 2. Extract Set-Cookie header
-  // 3. Store cookie in Next.js context
+  // 2. Extract Set-Cookie header (contains access + refresh tokens)
+  // 3. Store BOTH cookies in Next.js context
   // 4. Return user data
 }
 ```
 
 #### Get Users Stats Action (`server/get-users-stats-action.ts`)
 
-Fetches user statistics from protected backend endpoint.
+Fetches user statistics with automatic token refresh.
 
 ```typescript
 export async function getUsersStats() {
-  // 1. Validate authentication (requireAuth)
-  // 2. Get auth headers with cookie
-  // 3. Fetch from backend
-  // 4. Return stats data
+  await requireAuth();
+
+  // fetchWithAuth handles token refresh automatically
+  const response = await fetchWithAuth(
+    `${process.env.NEXT_PUBLIC_API_URL}/api/user/stats`,
+    { method: 'GET' }
+  );
+
+  return response.json();
+}
+```
+
+**Key Change:** Using `fetchWithAuth()` instead of regular `fetch()` enables automatic token refresh.
+
+#### Logout Action (`server/logout-action.ts`)
+
+Logs out the user by revoking the refresh token and clearing cookies.
+
+```typescript
+export async function logout() {
+  const refreshToken = await getRefreshToken();
+
+  // Call backend to revoke refresh token
+  if (refreshToken) {
+    await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/auth/logout`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: `refresh_token=${refreshToken}`,
+      },
+    });
+  }
+
+  // Clear both tokens from Next.js cookies
+  await clearAuthCookies();
 }
 ```
 
@@ -304,12 +399,69 @@ const corsOptions = {
 };
 ```
 
+## Transparent Token Refresh Benefits
+
+### User Experience
+
+1. **Zero Disruption**: User never sees login prompts due to expired tokens
+2. **Seamless Sessions**: Can work for hours without re-authentication
+3. **No Loading States**: Refresh happens in background, no UI changes
+4. **Natural Flow**: Application feels responsive and modern
+
+### Developer Experience
+
+1. **Simple Integration**: Just replace `fetch` with `fetchWithAuth`
+2. **No Timer Logic**: No need for `setInterval` or token expiration checks
+3. **Centralized**: All refresh logic in one function
+4. **Maintainable**: Easy to understand and modify
+
+### Security
+
+1. **Short Access Tokens**: 2-minute expiration reduces attack window
+2. **Automatic Rotation**: Refresh token changes on every use
+3. **Reuse Detection**: Backend revokes all sessions if stolen token is detected
+4. **httpOnly Cookies**: Tokens never accessible to JavaScript (XSS protection)
+
+### How to Use in New Server Actions
+
+```typescript
+'use server';
+
+import { fetchWithAuth } from '@/lib/auth';
+
+export async function myProtectedAction() {
+  // fetchWithAuth handles ALL authentication + refresh automatically
+  // NO need to call requireAuth() before!
+  const response = await fetchWithAuth(
+    `${process.env.NEXT_PUBLIC_API_URL}/api/my-endpoint`,
+    { method: 'GET' }
+  );
+
+  if (!response.ok) {
+    throw new Error('Request failed');
+  }
+
+  return response.json();
+}
+```
+
+**⚠️ IMPORTANT**: DO NOT use `requireAuth()` when using `fetchWithAuth()`.
+
+- `requireAuth()` checks the access token (which may have expired)
+- If the access token expired, `requireAuth()` throws an error BEFORE `fetchWithAuth()` can refresh
+- `fetchWithAuth()` handles the entire authentication and refresh flow automatically
+
+That's it! The refresh logic is completely automatic.
+
 ## Security Considerations
 
-- **httpOnly Cookies**: Tokens are stored in httpOnly cookies (set by backend), preventing XSS attacks
+- **httpOnly Cookies**: Both tokens stored as httpOnly cookies (set by backend), preventing XSS attacks
 - **Server-Side Validation**: All authentication logic happens on the server
-- **No Token Exposure**: JWT tokens are never exposed to client-side JavaScript
+- **No Token Exposure**: Tokens are never exposed to client-side JavaScript
 - **Cookie Attributes**: Secure, SameSite, and appropriate expiration settings
+- **Automatic Rotation**: Refresh tokens are rotated on every use
+- **Token Hashing**: Tokens are hashed (SHA-256) in database
+- **Reuse Detection**: Backend detects and blocks token theft attempts
 
 ## Integration with Backend
 
@@ -317,14 +469,24 @@ This application is designed to work with [JWT API Express](../jwt-api-express).
 
 **Backend Endpoints Used:**
 
-- `POST /api/auth/login` - User authentication
+- `POST /api/auth/login` - User authentication (sets access + refresh tokens)
+- `POST /api/auth/refresh` - Token refresh (automatic rotation)
+- `POST /api/auth/logout` - Logout (revokes refresh token)
 - `GET /api/user/stats` - User statistics (protected)
 
 **Backend Requirements:**
 
 - Must be running on the URL specified in `NEXT_PUBLIC_API_URL`
 - Must have CORS enabled for Next.js origin
-- Must set httpOnly cookies with JWT tokens
+- Must set httpOnly cookies with both access and refresh tokens
+- Must implement refresh token rotation system
+
+## Documentation
+
+For detailed information:
+
+- **Client Implementation**: See [REFRESH_TOKEN_CLIENT.md](./REFRESH_TOKEN_CLIENT.md) for complete client-side documentation
+- **Server Implementation**: See [jwt-api-express/REFRESH_TOKENS.md](../jwt-api-express/REFRESH_TOKENS.md) for backend documentation
 
 ## Learn More
 

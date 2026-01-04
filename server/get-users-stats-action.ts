@@ -1,15 +1,12 @@
 'use server';
 
-import { requireAuth, getAuthHeaders } from '@/lib/auth';
+import { fetchWithAuth } from '@/lib/auth';
 
 export async function getUsersStats() {
-  await requireAuth();
-
-  const response = await fetch(
+  const response = await fetchWithAuth(
     `${process.env.NEXT_PUBLIC_API_URL}/api/user/stats`,
     {
       method: 'GET',
-      headers: await getAuthHeaders(),
     }
   );
 

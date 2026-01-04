@@ -17,6 +17,7 @@ import {
   PopoverAnchor,
 } from '@/components/ui/popover';
 import { getUsersStats } from '@/server/get-users-stats-action';
+import { logout as logoutAction } from '@/server/logout-action';
 
 interface UserData {
   id: string;
@@ -68,9 +69,16 @@ export default function DashboardPage() {
     }
   }, [loginData, router]);
 
-  const handleLogout = () => {
-    sessionStorage.removeItem('loginData');
-    router.push('/');
+  const handleLogout = async () => {
+    try {
+      await logoutAction();
+      sessionStorage.removeItem('loginData');
+      router.push('/');
+    } catch (error) {
+      console.error('Logout failed:', error);
+      sessionStorage.removeItem('loginData');
+      router.push('/');
+    }
   };
 
   const handleShowStats = async () => {

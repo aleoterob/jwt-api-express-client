@@ -1,6 +1,6 @@
 'use server';
 
-import { extractAndSetCookie } from '@/lib/auth';
+import { extractAndSetCookies } from '@/lib/auth';
 
 export async function login(email: string, password: string) {
   const response = await fetch(
@@ -23,7 +23,7 @@ export async function login(email: string, password: string) {
 
   const setCookieHeader = response.headers.get('set-cookie');
   if (setCookieHeader) {
-    await extractAndSetCookie(setCookieHeader);
+    await extractAndSetCookies(setCookieHeader);
   }
 
   return response.json();
